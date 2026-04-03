@@ -17,11 +17,12 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS videos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            drive_file_id TEXT UNIQUE NOT NULL,   -- Google Drive file ID
+            drive_file_id TEXT UNIQUE NOT NULL,
             filename TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',         -- pending | approved | uploaded | skipped
+            status TEXT DEFAULT 'pending',
             caption TEXT,
-            platform TEXT,                         -- instagram | youtube | both
+            platform TEXT,
+            post_id TEXT,
             uploaded_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -64,6 +65,30 @@ def update_status(drive_file_id, status, caption=None, platform=None):
             uploaded_at = CASE WHEN ? = 'uploaded' THEN CURRENT_TIMESTAMP ELSE uploaded_at END
         WHERE drive_file_id = ?
     """, (status, caption, platform, status, drive_file_id))
+    conn.commit()
+    conn.close()
+
+def get_all_videos():
+    """Returns all videos from the database, newest first."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM videos ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def mark_uploaded(drive_file_id, platform, post_id=None):
+    """Marks a video as uploaded and stores the platform post ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE videos
+        SET status = 'uploaded',
+            platform = ?,
+            post_id = ?,
+            uploaded_at = CURRENT_TIMESTAMP
+        WHERE drive_file_id = ?
+    """, (platform, post_id, drive_file_id))
     conn.commit()
     conn.close()
 

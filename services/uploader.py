@@ -1,6 +1,5 @@
 import os
 import logging
-from datetime import datetime
 
 from database.db import get_connection, mark_uploaded
 from services.drive_service import download_video
@@ -8,7 +7,6 @@ from services.instagram_service import upload_reel
 from services.youtube_service import upload_short
 
 logger = logging.getLogger(__name__)
-
 DOWNLOAD_FOLDER = "downloads"
 
 
@@ -24,10 +22,8 @@ def get_approved_videos():
 
 def upload_approved_videos():
     """
-    Main orchestrator — called by the scheduler.
-    
-    Finds all approved videos → downloads each → uploads to
-    selected platform(s) → marks as uploaded → cleans up.
+    Main orchestrator — called by the scheduler and dashboard.
+    Loops through all approved videos and processes each one.
     """
     approved = get_approved_videos()
 
@@ -43,11 +39,15 @@ def upload_approved_videos():
 
 def _process_one_video(video):
     """
-    Handles the full upload cycle for a single video:
-    1. Download from Drive
+    Full upload cycle for one video:
+    1. Download from Drive locally (needed for both Instagram + YouTube)
     2. Upload to selected platform(s)
-    3. Update DB
-    4. Clean up temp file
+    3. Update DB status to 'uploaded'
+    4. Clean up local temp file
+
+    WHY always download first?
+    Both Instagram (file upload) and YouTube (MediaFileUpload) need
+    a local file. Drive URLs are not publicly accessible to external APIs.
     """
     drive_file_id = video["drive_file_id"]
     filename      = video["filename"]
@@ -55,55 +55,68 @@ def _process_one_video(video):
     platform      = video["platform"] or "both"
 
     print(f"\n{'='*50}")
-    print(f"📹 Processing: {filename}")
-    print(f"🎯 Platform  : {platform}")
-    print(f"📝 Caption   : {caption[:60]}...")
+    print(f"📹 Processing : {filename}")
+    print(f"🎯 Platform   : {platform}")
+    print(f"📝 Caption    : {caption[:60]}{'...' if len(caption) > 60 else ''}")
     print(f"{'='*50}")
 
     local_path = None
+
     try:
         # ── 1. Download from Drive ────────────────────────────
+        # Always download — both platforms need local file
         print("\n⬇️  Downloading from Google Drive...")
         local_path = download_video(drive_file_id, DOWNLOAD_FOLDER)
+
+        if not local_path or not os.path.exists(local_path):
+            print("❌ Download failed — skipping this video.")
+            return
+
+        file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+        print(f"✅ Downloaded: {filename} ({file_size_mb:.1f} MB)")
 
         # ── 2. Upload to platform(s) ──────────────────────────
         ig_post_id  = None
         yt_video_id = None
 
         if platform in ("instagram", "both"):
+            # Pass local file path — NOT a URL
             ig_post_id = upload_reel(local_path, caption)
             if ig_post_id:
-                print(f"📸 Instagram post ID: {ig_post_id}")
+                print(f"📸 Instagram post ID : {ig_post_id}")
             else:
-                print("⚠️  Instagram upload failed — continuing...")
+                print("⚠️  Instagram upload failed — continuing to YouTube...")
 
         if platform in ("youtube", "both"):
-            # YouTube title = first line of caption, max 100 chars
+            # Use first line of caption as YouTube title
             title = caption.split("\n")[0][:100] or filename
             yt_video_id = upload_short(local_path, title, caption)
             if yt_video_id:
-                print(f"▶️  YouTube video ID : {yt_video_id}")
+                print(f"▶️  YouTube video ID  : {yt_video_id}")
             else:
-                print("⚠️  YouTube upload failed — continuing...")
+                print("⚠️  YouTube upload failed.")
 
         # ── 3. Update DB ──────────────────────────────────────
-        # Only mark uploaded if at least one platform succeeded
         if ig_post_id or yt_video_id:
-            combined_post_id = f"ig:{ig_post_id or 'failed'}|yt:{yt_video_id or 'failed'}"
+            combined_post_id = (
+                f"ig:{ig_post_id or 'failed'}"
+                f"|yt:{yt_video_id or 'failed'}"
+            )
             mark_uploaded(drive_file_id, platform, combined_post_id)
-            print(f"\n✅ Marked as uploaded in DB.")
+            print(f"\n✅ DB updated — marked as uploaded.")
+            print(f"   Post IDs: {combined_post_id}")
         else:
-            print(f"\n❌ Both uploads failed — keeping status as 'approved' to retry next cycle.")
+            print(f"\n❌ All uploads failed — keeping status 'approved' to retry next cycle.")
 
     except Exception as e:
-        logger.error(f"Error processing {filename}: {e}")
+        logger.error(f"Error processing {filename}: {e}", exc_info=True)
         print(f"❌ Unexpected error: {e}")
 
     finally:
-        # ── 4. Always clean up the local file ─────────────────
+        # ── 4. Always clean up local file ─────────────────────
         if local_path and os.path.exists(local_path):
             os.remove(local_path)
-            print(f"🗑️  Cleaned up: {local_path}")
+            print(f"🗑️  Cleaned up temp file: {local_path}")
 
 
 if __name__ == "__main__":

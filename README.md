@@ -53,6 +53,10 @@ Next cycle: video downloads, re-encodes, uploads, DB updates
 ```
 
 ---
+## 🏗️ Architecture
+
+![Architecture Diagram](architecture.svg)
+
 
 ## Tech Stack
 
